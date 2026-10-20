@@ -1,7 +1,7 @@
-"""A managed worker turn (every Kanban card) is never offered ``delegate_task`` on purpose
-(ef52a09a558: a child needs an owner-registered execution the worker cannot reserve). Asking
-for it must explain that boundary and name the supported alternative, never answer "call it
-directly" for a tool this turn cannot see (#141793)."""
+"""In a managed worker (every Kanban card) ``delegate_task`` works through owner-reserved children
+(#141793), so asking for it in a turn whose toolsets leave delegation off gets the ordinary
+"not available in this execution context" answer: never "call it directly", and never a claim that
+the worker boundary itself forbids delegation."""
 import json
 
 import pytest
@@ -12,26 +12,22 @@ from agent.conversation_loop import _invalid_tool_name_error_content
 from tools.tool_search import ToolSearchConfig, dispatch_tool_describe, resolve_underlying_call
 
 
-@pytest.fixture
-def worker_process(monkeypatch):
-    monkeypatch.setattr(runtime_session_store, "_worker_process", True)
-
-
-def test_bridge_explains_the_managed_worker_boundary_for_delegate_task(worker_process):
-    worker_tools = [{"type": "function", "function": {"name": "kanban_create", "parameters": {}}}]
+@pytest.mark.parametrize("worker", [True, False])
+def test_delegate_task_absent_from_a_turn_is_reported_as_unavailable(monkeypatch, worker):
+    monkeypatch.setattr(runtime_session_store, "_worker_process", worker)
+    turn_tools = [{"type": "function", "function": {"name": "kanban_create", "parameters": {}}}]
     _, _, call_err = resolve_underlying_call({"calls": [{"name": "delegate_task", "arguments": {}}]},
                                              {"kanban_create"})
-    described = json.loads(dispatch_tool_describe({"names": ["delegate_task"]}, current_tool_defs=worker_tools,
+    described = json.loads(dispatch_tool_describe({"names": ["delegate_task"]}, current_tool_defs=turn_tools,
                                                   config=ToolSearchConfig.from_raw({})))
-    direct = _invalid_tool_name_error_content("delegate_task", ["kanban_create"])
-    for message in (call_err or "", described["errors"]["delegate_task"], direct):
-        assert "managed worker" in message and "kanban_create" in message, message
-        assert "Call it directly" not in message and "does not exist" not in message, message
+    for message in (call_err or "", described["errors"]["delegate_task"]):
+        assert "not available in this execution context" in message, message
+        assert "Call it directly" not in message and "managed worker" not in message, message
+    assert "managed worker" not in _invalid_tool_name_error_content("delegate_task", ["kanban_create"])
 
 
-def test_outside_a_worker_delegate_task_keeps_the_ordinary_guidance(monkeypatch):
-    monkeypatch.setattr(runtime_session_store, "_worker_process", False)
+def test_a_turn_that_has_delegate_task_keeps_the_ordinary_guidance(monkeypatch):
+    monkeypatch.setattr(runtime_session_store, "_worker_process", True)
     _, _, err = resolve_underlying_call({"calls": [{"name": "delegate_task", "arguments": {}}]},
                                         {"delegate_task"})
     assert "Call it directly" in (err or "")
-    assert "managed worker" not in _invalid_tool_name_error_content("delegate_task", ["todo"])
